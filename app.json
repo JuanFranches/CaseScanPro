@@ -27,6 +27,12 @@
     },
     "plugins": [
       "expo-web-browser"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "fef895ce-c4ea-4ab6-a668-2303a4f6f4bf"
+      }
+    },
+    "owner": "juan97"
   }
 }
