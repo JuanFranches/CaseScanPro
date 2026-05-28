@@ -13,6 +13,7 @@
       }
     },
     "android": {
+      "package": "com.casescanpro.app",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
