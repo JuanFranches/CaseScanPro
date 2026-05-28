@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   Platform,
   KeyboardAvoidingView,
+  Linking,
 } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import * as DocumentPicker from 'expo-document-picker';
@@ -401,16 +402,27 @@ export default function ExpedienteDetailScreen({ route, navigation }: Props) {
         <View style={styles.lastSection}>
           <View style={styles.docSectionHeader}>
             <Text style={[styles.sectionTitle, { marginBottom: 0 }]}>Documentos</Text>
-            <TouchableOpacity
-              style={[styles.uploadBtn, uploadingDoc && styles.uploadBtnDisabled]}
-              onPress={handleUploadArchivo}
-              disabled={uploadingDoc}
-              activeOpacity={0.8}
-            >
-              {uploadingDoc
-                ? <ActivityIndicator size="small" color="#fff" />
-                : <Text style={styles.uploadBtnText}>↑ Subir archivo</Text>}
-            </TouchableOpacity>
+            <View style={styles.docHeaderActions}>
+              {Platform.OS !== 'web' && (
+                <TouchableOpacity
+                  style={styles.scanBtn}
+                  onPress={() => navigation.navigate('Scan', { expedienteId })}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.scanBtnText}>📷 Escanear</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                style={[styles.uploadBtn, uploadingDoc && styles.uploadBtnDisabled]}
+                onPress={handleUploadArchivo}
+                disabled={uploadingDoc}
+                activeOpacity={0.8}
+              >
+                {uploadingDoc
+                  ? <ActivityIndicator size="small" color="#fff" />
+                  : <Text style={styles.uploadBtnText}>↑ Subir</Text>}
+              </TouchableOpacity>
+            </View>
           </View>
 
           {documentos.length === 0 ? (
@@ -420,7 +432,11 @@ export default function ExpedienteDetailScreen({ route, navigation }: Props) {
               <TouchableOpacity
                 key={doc.id}
                 style={styles.docCard}
-                onPress={() => navigation.navigate('DocumentViewer', { documentoId: doc.id })}
+                onPress={() =>
+                  Platform.OS === 'web'
+                    ? Linking.openURL(doc.archivo_url)
+                    : navigation.navigate('DocumentViewer', { documentoId: doc.id })
+                }
                 activeOpacity={0.7}
               >
                 <View style={styles.docIconWrap}>
@@ -697,12 +713,29 @@ const styles = StyleSheet.create({
     lineHeight: 28,
   },
 
-  // Documentos: cabecera con botón subir
+  // Documentos: cabecera con botones de acción
   docSectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: 12,
+  },
+  docHeaderActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  scanBtn: {
+    backgroundColor: '#f0f0f0',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    alignItems: 'center',
+  },
+  scanBtnText: {
+    color: '#1a1a1a',
+    fontSize: 13,
+    fontWeight: '600',
   },
   uploadBtn: {
     backgroundColor: '#1a1a1a',

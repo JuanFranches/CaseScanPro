@@ -1,7 +1,7 @@
 import 'react-native-url-polyfill/auto';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { View, ActivityIndicator } from 'react-native';
+import { View, ActivityIndicator, Platform } from 'react-native';
 import { AuthProvider, useAuth } from './src/hooks/useAuth';
 import LoginScreen from './src/screens/LoginScreen';
 import ExpedientesScreen from './src/screens/ExpedientesScreen';
@@ -76,17 +76,21 @@ function RootNavigator() {
             })}
           />
 
-          <Stack.Screen
-            name="Scan"
-            component={ScanScreen}
-            options={{ title: 'Escanear documento' }}
-          />
+          {Platform.OS !== 'web' && (
+            <Stack.Screen
+              name="Scan"
+              component={ScanScreen}
+              options={{ title: 'Escanear documento' }}
+            />
+          )}
 
-          <Stack.Screen
-            name="DocumentViewer"
-            component={DocumentViewerScreen}
-            options={{ title: 'Ver documento' }}
-          />
+          {Platform.OS !== 'web' && (
+            <Stack.Screen
+              name="DocumentViewer"
+              component={DocumentViewerScreen}
+              options={{ title: 'Ver documento' }}
+            />
+          )}
         </>
       )}
     </Stack.Navigator>
