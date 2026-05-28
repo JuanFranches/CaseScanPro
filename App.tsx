@@ -8,6 +8,7 @@ import ExpedientesScreen from './src/screens/ExpedientesScreen';
 import ExpedienteDetailScreen from './src/screens/ExpedienteDetailScreen';
 import ExpedienteFormScreen from './src/screens/ExpedienteFormScreen';
 import ScanScreen from './src/screens/ScanScreen';
+import DocumentViewerScreen from './src/screens/DocumentViewerScreen';
 
 /**
  * Tipo canónico del stack. Importarlo en los screens para tener
@@ -19,6 +20,7 @@ export type RootStackParamList = {
   ExpedienteDetail:  { expedienteId: string };
   ExpedienteForm:    { expedienteId?: string } | undefined;
   Scan:              { expedienteId: string };
+  DocumentViewer:    { documentoId: string };
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -78,6 +80,12 @@ function RootNavigator() {
             name="Scan"
             component={ScanScreen}
             options={{ title: 'Escanear documento' }}
+          />
+
+          <Stack.Screen
+            name="DocumentViewer"
+            component={DocumentViewerScreen}
+            options={{ title: 'Ver documento' }}
           />
         </>
       )}

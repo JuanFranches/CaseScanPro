@@ -14,28 +14,22 @@ import {
 } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../App';
-import DocumentScanner, {
-  ResponseType,
-  ScanDocumentResponseStatus,
-} from 'react-native-document-scanner-plugin';
+import { launchScanner } from '@dariyd/react-native-document-scanner';
 import { jsPDF } from 'jspdf';
 import { supabase } from '../lib/supabase';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Scan'>;
 
 const { width: SCREEN_W } = Dimensions.get('window');
-// 2 columnas: 20+20 de padding + 12 de gap entre columnas
-const THUMB_W = (SCREEN_W - 52) / 2;
-const THUMB_H = THUMB_W * 1.37; // proporción A4 portrait
+const THUMB_W   = (SCREEN_W - 52) / 2; // 2 columnas: 20+20 padding + 12 gap
+const THUMB_H   = THUMB_W * 1.37;       // proporción A4 portrait
+const MAX_PAGES = 50;
 
 type Mode = 'una' | 'varias';
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Construye un PDF en memoria a partir de un array de strings base64 (JPEG).
- * Cada imagen ocupa una página A4 completa.
- */
+// ── buildPdf ─────────────────────────────────────────────────────────────────
+// Construye un PDF en memoria a partir de un array de strings base64 (JPEG).
+// Cada imagen ocupa una página A4 completa.
 async function buildPdf(base64Images: string[]): Promise<ArrayBuffer> {
   const doc = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
   const w = doc.internal.pageSize.getWidth();
@@ -69,42 +63,72 @@ export default function ScanScreen({ route, navigation }: Props) {
   const [uploading, setUploading] = useState(false);
   const [docNombre, setDocNombre] = useState('');
 
-  // ── Escanear una página ─────────────────────────────────────────────────
+  // ── Escanear ────────────────────────────────────────────────────────────
+  //
+  // goBackOnCancel: si true y el usuario cancela, vuelve al selector de modo.
+  //                Si false (Retomar / Volver a escanear), permanece en la
+  //                pantalla de revisión actual.
 
-  const triggerScan = async (currentMode: Mode) => {
+  const doScan = async (currentMode: Mode, goBackOnCancel: boolean) => {
     if (scanning) return;
     setScanning(true);
     try {
-      const result = await DocumentScanner.scanDocument({
-        croppedImageQuality: 100,
-        maxNumDocuments: 1,
-        responseType: ResponseType.Base64,
-      });
+      const result = await launchScanner({ quality: 1, includeBase64: true });
 
-      if (
-        result.status === ScanDocumentResponseStatus.Cancel ||
-        !result.scannedImages?.length
-      ) {
-        // Si cancela en el primer escaneo de 'una', vuelve al selector
-        if (currentMode === 'una' && pages.length === 0) setMode(null);
+      if (result.error) {
+        Alert.alert(
+          'Error del escáner',
+          result.errorMessage ?? 'Ocurrió un error inesperado',
+        );
         return;
       }
 
-      const b64 = result.scannedImages[0];
+      const cancelled = result.didCancel || !result.images?.length;
+      if (cancelled) {
+        if (goBackOnCancel) { setMode(null); setPages([]); setDocNombre(''); }
+        return;
+      }
+
+      const scanned = result.images!;
+
       if (currentMode === 'una') {
+        const b64 = scanned[0].base64;
+        if (!b64) {
+          Alert.alert('Error', 'No se pudo obtener la imagen escaneada');
+          return;
+        }
         setPages([b64]);
       } else {
-        setPages(prev => [...prev, b64]);
+        // Modo varias: validar límite antes de aceptar
+        if (scanned.length > MAX_PAGES) {
+          Alert.alert(
+            'Límite superado',
+            `Escaneaste ${scanned.length} páginas, pero el máximo permitido es ` +
+            `${MAX_PAGES}. Dividí el documento en partes más pequeñas.`,
+          );
+          if (goBackOnCancel) { setMode(null); setPages([]); setDocNombre(''); }
+          return;
+        }
+        const b64List = scanned.map(img => img.base64 ?? '').filter(Boolean);
+        if (!b64List.length) {
+          Alert.alert('Error', 'No se pudieron obtener las imágenes del escaneo');
+          return;
+        }
+        setPages(b64List);
       }
     } catch {
-      Alert.alert('Error', 'No se pudo acceder al escáner. Verificá los permisos de cámara.');
-      if (currentMode === 'una' && pages.length === 0) setMode(null);
+      Alert.alert(
+        'Error',
+        'No se pudo acceder al escáner. Verificá los permisos de cámara.',
+      );
+      if (goBackOnCancel) { setMode(null); setPages([]); setDocNombre(''); }
     } finally {
       setScanning(false);
     }
   };
 
   // ── Confirmar y subir ────────────────────────────────────────────────────
+  // Lógica de generación de PDF y subida a Supabase sin cambios.
 
   const handleFinalize = async () => {
     if (pages.length === 0) return;
@@ -119,7 +143,7 @@ export default function ScanScreen({ route, navigation }: Props) {
     try {
       const pdfBuffer = await buildPdf(pages);
 
-      const timestamp = Date.now();
+      const timestamp   = Date.now();
       const storagePath = `${user.id}/${expedienteId}/${timestamp}.pdf`;
 
       const { error: uploadError } = await supabase.storage
@@ -143,8 +167,8 @@ export default function ScanScreen({ route, navigation }: Props) {
           expediente_id: expedienteId,
           nombre,
           tipo: `PDF · ${pagesLabel}`,
-          archivo_url: publicUrl,
-          user_id: user.id,
+          archivo_url:  publicUrl,
+          user_id:      user.id,
         });
 
       if (dbError) {
@@ -160,7 +184,7 @@ export default function ScanScreen({ route, navigation }: Props) {
     }
   };
 
-  // ── Confirmar descarte ───────────────────────────────────────────────────
+  // ── Volver con confirmación de descarte ──────────────────────────────────
 
   const handleBack = () => {
     if (pages.length > 0) {
@@ -172,17 +196,18 @@ export default function ScanScreen({ route, navigation }: Props) {
           {
             text: 'Descartar',
             style: 'destructive',
-            onPress: () => { setMode(null); setPages([]); },
+            onPress: () => { setMode(null); setPages([]); setDocNombre(''); },
           },
         ],
       );
     } else {
       setMode(null);
       setPages([]);
+      setDocNombre('');
     }
   };
 
-  // ── Pantalla de carga ────────────────────────────────────────────────────
+  // ── Pantallas de carga ───────────────────────────────────────────────────
 
   if (scanning || uploading) {
     return (
@@ -215,7 +240,7 @@ export default function ScanScreen({ route, navigation }: Props) {
 
           <TouchableOpacity
             style={styles.modeCard}
-            onPress={() => { setMode('una'); triggerScan('una'); }}
+            onPress={() => { setMode('una'); doScan('una', true); }}
             activeOpacity={0.75}
           >
             <Text style={styles.modeIcon}>📄</Text>
@@ -228,13 +253,15 @@ export default function ScanScreen({ route, navigation }: Props) {
 
           <TouchableOpacity
             style={styles.modeCard}
-            onPress={() => setMode('varias')}
+            onPress={() => { setMode('varias'); doScan('varias', true); }}
             activeOpacity={0.75}
           >
             <Text style={styles.modeIcon}>📚</Text>
             <View style={styles.modeText}>
               <Text style={styles.modeTitle}>Varias páginas</Text>
-              <Text style={styles.modeDesc}>Acumula páginas antes de subir</Text>
+              <Text style={styles.modeDesc}>
+                Escanea todo el lote en una sola sesión de cámara
+              </Text>
             </View>
             <Text style={styles.modeArrow}>›</Text>
           </TouchableOpacity>
@@ -254,7 +281,7 @@ export default function ScanScreen({ route, navigation }: Props) {
       <View style={styles.container}>
         <View style={styles.topBar}>
           <TouchableOpacity
-            onPress={() => { setMode(null); setPages([]); }}
+            onPress={handleBack}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
             <Text style={styles.backText}>← Volver</Text>
@@ -270,7 +297,7 @@ export default function ScanScreen({ route, navigation }: Props) {
         >
           {previewUri ? (
             <>
-              {/* Preview */}
+              {/* Vista previa de la imagen escaneada */}
               <View style={styles.previewCard}>
                 <Image
                   source={{ uri: previewUri }}
@@ -279,7 +306,7 @@ export default function ScanScreen({ route, navigation }: Props) {
                 />
               </View>
 
-              {/* Nombre */}
+              {/* Nombre del documento */}
               <View style={styles.inputCard}>
                 <Text style={styles.inputMeta}>NOMBRE DEL DOCUMENTO</Text>
                 <TextInput
@@ -291,12 +318,13 @@ export default function ScanScreen({ route, navigation }: Props) {
                 />
               </View>
 
+              {/* Retomar: re-abre el escáner y reemplaza la imagen actual */}
               <TouchableOpacity
                 style={styles.secondaryBtn}
-                onPress={() => triggerScan('una')}
+                onPress={() => doScan('una', false)}
                 activeOpacity={0.75}
               >
-                <Text style={styles.secondaryBtnText}>Volver a escanear</Text>
+                <Text style={styles.secondaryBtnText}>Retomar</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -308,13 +336,13 @@ export default function ScanScreen({ route, navigation }: Props) {
               </TouchableOpacity>
             </>
           ) : (
-            /* No hay página escaneada (canceló y volvió aquí) */
+            /* El usuario canceló y volvió sin escanear */
             <View style={styles.emptyState}>
               <Text style={styles.emptyIcon}>📷</Text>
               <Text style={styles.emptyMsg}>No se escaneó ninguna página</Text>
               <TouchableOpacity
                 style={styles.primaryBtn}
-                onPress={() => triggerScan('una')}
+                onPress={() => doScan('una', false)}
                 activeOpacity={0.8}
               >
                 <Text style={styles.primaryBtnText}>Escanear ahora</Text>
@@ -326,7 +354,9 @@ export default function ScanScreen({ route, navigation }: Props) {
     );
   }
 
-  // ── Modo: varias páginas ─────────────────────────────────────────────────
+  // ── Modo: varias páginas (revisión de lote) ──────────────────────────────
+
+  const pageCount = pages.length;
 
   return (
     <View style={styles.container}>
@@ -338,9 +368,9 @@ export default function ScanScreen({ route, navigation }: Props) {
           <Text style={styles.backText}>← Volver</Text>
         </TouchableOpacity>
         <Text style={styles.topBarTitle}>
-          {pages.length === 0
+          {pageCount === 0
             ? 'Varias páginas'
-            : `${pages.length} ${pages.length === 1 ? 'página' : 'páginas'}`}
+            : `${pageCount} ${pageCount === 1 ? 'página' : 'páginas'}`}
         </Text>
         <View style={styles.topBarSpacer} />
       </View>
@@ -350,79 +380,82 @@ export default function ScanScreen({ route, navigation }: Props) {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {/* Estado vacío */}
-        {pages.length === 0 && (
+        {pageCount === 0 ? (
+          /* Estado vacío: el usuario canceló o volvió a escanear */
           <View style={styles.emptyState}>
             <Text style={styles.emptyIcon}>📚</Text>
-            <Text style={styles.emptyMsg}>Escaneá la primera página para comenzar</Text>
-          </View>
-        )}
-
-        {/* Grid de miniaturas */}
-        {pages.length > 0 && (
-          <View style={styles.thumbGrid}>
-            {pages.map((b64, i) => (
-              <View key={i} style={styles.thumbOuter}>
-                <Image
-                  source={{ uri: `data:image/jpeg;base64,${b64}` }}
-                  style={styles.thumbImg}
-                  resizeMode="cover"
-                />
-                {/* Número de página */}
-                <View style={styles.thumbBadge}>
-                  <Text style={styles.thumbBadgeText}>{i + 1}</Text>
-                </View>
-                {/* Eliminar página */}
-                <TouchableOpacity
-                  style={styles.thumbRemove}
-                  onPress={() => setPages(prev => prev.filter((_, idx) => idx !== i))}
-                  hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
-                >
-                  <Text style={styles.thumbRemoveText}>✕</Text>
-                </TouchableOpacity>
-              </View>
-            ))}
-          </View>
-        )}
-
-        {/* Nombre del documento (solo cuando hay páginas) */}
-        {pages.length > 0 && (
-          <View style={styles.inputCard}>
-            <Text style={styles.inputMeta}>NOMBRE DEL DOCUMENTO</Text>
-            <TextInput
-              style={styles.inputField}
-              value={docNombre}
-              onChangeText={setDocNombre}
-              placeholder="Ej: Demanda inicial"
-              placeholderTextColor="#ccc"
-            />
-          </View>
-        )}
-
-        {/* Escanear otra — SIEMPRE visible */}
-        <TouchableOpacity
-          style={styles.scanMoreBtn}
-          onPress={() => triggerScan('varias')}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.scanMoreText}>
-            {pages.length === 0
-              ? '📷  Escanear primera página'
-              : '📷  Escanear otra página'}
-          </Text>
-        </TouchableOpacity>
-
-        {/* Finalizar — solo cuando hay páginas */}
-        {pages.length > 0 && (
-          <TouchableOpacity
-            style={styles.primaryBtn}
-            onPress={handleFinalize}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.primaryBtnText}>
-              {`Finalizar y subir · ${pages.length} ${pages.length === 1 ? 'página' : 'páginas'}`}
+            <Text style={styles.emptyMsg}>
+              Escaneá todas las páginas en una sola sesión
             </Text>
-          </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.primaryBtn}
+              onPress={() => doScan('varias', false)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.primaryBtnText}>Iniciar escaneo</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <>
+            {/* Grid de miniaturas con X para eliminar páginas individuales */}
+            <View style={styles.thumbGrid}>
+              {pages.map((b64, i) => (
+                <View key={i} style={styles.thumbOuter}>
+                  <Image
+                    source={{ uri: `data:image/jpeg;base64,${b64}` }}
+                    style={styles.thumbImg}
+                    resizeMode="cover"
+                  />
+                  <View style={styles.thumbBadge}>
+                    <Text style={styles.thumbBadgeText}>{i + 1}</Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.thumbRemove}
+                    onPress={() => setPages(prev => prev.filter((_, idx) => idx !== i))}
+                    hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
+                  >
+                    <Text style={styles.thumbRemoveText}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
+
+            {/* Nombre del documento */}
+            <View style={styles.inputCard}>
+              <Text style={styles.inputMeta}>NOMBRE DEL DOCUMENTO</Text>
+              <TextInput
+                style={styles.inputField}
+                value={docNombre}
+                onChangeText={setDocNombre}
+                placeholder="Ej: Demanda inicial"
+                placeholderTextColor="#ccc"
+              />
+            </View>
+
+            {/* Volver a escanear: descarta las páginas actuales y reabre el escáner */}
+            <TouchableOpacity
+              style={styles.secondaryBtn}
+              onPress={() => {
+                setPages([]);
+                setDocNombre('');
+                doScan('varias', false);
+              }}
+              activeOpacity={0.75}
+            >
+              <Text style={styles.secondaryBtnText}>Volver a escanear</Text>
+            </TouchableOpacity>
+
+            {/* Guardar PDF */}
+            <TouchableOpacity
+              style={styles.primaryBtn}
+              onPress={handleFinalize}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.primaryBtnText}>
+                {`Guardar PDF · ${pageCount} ${pageCount === 1 ? 'página' : 'páginas'}`}
+              </Text>
+            </TouchableOpacity>
+          </>
         )}
       </ScrollView>
     </View>
@@ -672,20 +705,6 @@ const styles = StyleSheet.create({
     borderColor: '#e0e0e0',
   },
   secondaryBtnText: {
-    color: '#1a1a1a',
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  scanMoreBtn: {
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    paddingVertical: 15,
-    alignItems: 'center',
-    borderWidth: 1.5,
-    borderStyle: 'dashed',
-    borderColor: '#1a1a1a',
-  },
-  scanMoreText: {
     color: '#1a1a1a',
     fontSize: 15,
     fontWeight: '600',

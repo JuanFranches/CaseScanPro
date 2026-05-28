@@ -7,7 +7,10 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Necesitamos la cámara para escanear documentos"
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -22,7 +25,7 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "react-native-document-scanner-plugin"
+      "expo-web-browser"
     ]
   }
 }

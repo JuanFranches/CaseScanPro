@@ -8,11 +8,12 @@ import {
   StyleSheet,
   Alert,
   ActivityIndicator,
-  Linking,
   Platform,
   KeyboardAvoidingView,
 } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+import * as DocumentPicker from 'expo-document-picker';
+import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../lib/supabase';
 import type { Database } from '../types/database';
 import type { RootStackParamList } from '../../App';
@@ -42,6 +43,36 @@ function formatTimestamp(iso: string): string {
   return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+function getExtension(filename: string, mimeType?: string): string {
+  const dot = filename.lastIndexOf('.');
+  if (dot > -1) return filename.slice(dot + 1).toLowerCase();
+  const map: Record<string, string> = {
+    'application/pdf': 'pdf',
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+    'image/gif': 'gif',
+    'application/msword': 'doc',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+    'text/plain': 'txt',
+  };
+  return map[mimeType ?? ''] ?? 'bin';
+}
+
+function getFriendlyType(mimeType: string, ext: string): string {
+  const map: Record<string, string> = {
+    'application/pdf': 'PDF',
+    'image/jpeg': 'Imagen',
+    'image/png': 'Imagen',
+    'image/webp': 'Imagen',
+    'image/gif': 'Imagen',
+    'application/msword': 'Word',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'Word',
+    'text/plain': 'Texto',
+  };
+  return map[mimeType] ?? ext.toUpperCase();
+}
+
 export default function ExpedienteDetailScreen({ route, navigation }: Props) {
   const { expedienteId } = route.params;
 
@@ -51,6 +82,7 @@ export default function ExpedienteDetailScreen({ route, navigation }: Props) {
   const [loading, setLoading] = useState(true);
   const [nuevaNota, setNuevaNota] = useState('');
   const [savingNota, setSavingNota] = useState(false);
+  const [uploadingDoc, setUploadingDoc] = useState(false);
 
   const fetchAll = useCallback(async () => {
     const [expRes, notasRes, docsRes] = await Promise.all([
@@ -140,13 +172,113 @@ export default function ExpedienteDetailScreen({ route, navigation }: Props) {
     );
   };
 
-  const handleOpenDocumento = async (url: string) => {
-    const canOpen = await Linking.canOpenURL(url);
-    if (canOpen) {
-      await Linking.openURL(url);
+  const refreshDocumentos = async () => {
+    const { data } = await supabase
+      .from('documentos_expediente')
+      .select('*')
+      .eq('expediente_id', expedienteId)
+      .order('created_at', { ascending: false });
+    setDocumentos(data ?? []);
+  };
+
+  const pickAndUpload = async (source: 'document' | 'image') => {
+    let uri: string;
+    let fileName: string;
+    let mimeType: string;
+
+    if (source === 'document') {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: [
+          'application/pdf',
+          'application/msword',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          'text/plain',
+        ],
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled || !result.assets?.length) return;
+      const asset = result.assets[0];
+      uri      = asset.uri;
+      fileName = asset.name;
+      mimeType = asset.mimeType ?? 'application/octet-stream';
     } else {
-      Alert.alert('Error', 'No se puede abrir este documento');
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permiso denegado', 'Necesitamos acceso a tu galería para subir imágenes.');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        quality: 0.85,
+        allowsMultipleSelection: false,
+      });
+      if (result.canceled || !result.assets?.length) return;
+      const asset = result.assets[0];
+      uri      = asset.uri;
+      fileName = asset.fileName ?? `imagen_${Date.now()}.jpg`;
+      mimeType = asset.mimeType ?? 'image/jpeg';
     }
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    const ext         = getExtension(fileName, mimeType);
+    const timestamp   = Date.now();
+    const storagePath = `${user.id}/${expedienteId}/${timestamp}.${ext}`;
+    const nombre      = fileName.replace(/\.[^.]+$/, '');
+    const tipo        = getFriendlyType(mimeType, ext);
+
+    setUploadingDoc(true);
+    try {
+      const response = await fetch(uri);
+      const blob     = await response.blob();
+
+      const { error: uploadError } = await supabase.storage
+        .from('documentos')
+        .upload(storagePath, blob, { contentType: mimeType });
+
+      if (uploadError) {
+        Alert.alert('Error al subir', uploadError.message);
+        return;
+      }
+
+      const { data: { publicUrl } } = supabase.storage
+        .from('documentos')
+        .getPublicUrl(storagePath);
+
+      const { error: dbError } = await supabase
+        .from('documentos_expediente')
+        .insert({
+          expediente_id: expedienteId,
+          nombre,
+          tipo,
+          archivo_url: publicUrl,
+          user_id: user.id,
+        });
+
+      if (dbError) {
+        Alert.alert('Error al guardar', dbError.message);
+        return;
+      }
+
+      await refreshDocumentos();
+    } catch {
+      Alert.alert('Error', 'No se pudo subir el archivo. Intentá de nuevo.');
+    } finally {
+      setUploadingDoc(false);
+    }
+  };
+
+  const handleUploadArchivo = () => {
+    Alert.alert(
+      'Subir archivo',
+      'Seleccioná el tipo de archivo',
+      [
+        { text: 'Documento (PDF, Word...)', onPress: () => pickAndUpload('document') },
+        { text: 'Imagen de la galería',     onPress: () => pickAndUpload('image') },
+        { text: 'Cancelar', style: 'cancel' },
+      ],
+    );
   };
 
   if (loading) {
@@ -267,7 +399,19 @@ export default function ExpedienteDetailScreen({ route, navigation }: Props) {
 
         {/* ── Documentos ───────────────────────────────────────── */}
         <View style={styles.lastSection}>
-          <Text style={styles.sectionTitle}>Documentos</Text>
+          <View style={styles.docSectionHeader}>
+            <Text style={[styles.sectionTitle, { marginBottom: 0 }]}>Documentos</Text>
+            <TouchableOpacity
+              style={[styles.uploadBtn, uploadingDoc && styles.uploadBtnDisabled]}
+              onPress={handleUploadArchivo}
+              disabled={uploadingDoc}
+              activeOpacity={0.8}
+            >
+              {uploadingDoc
+                ? <ActivityIndicator size="small" color="#fff" />
+                : <Text style={styles.uploadBtnText}>↑ Subir archivo</Text>}
+            </TouchableOpacity>
+          </View>
 
           {documentos.length === 0 ? (
             <Text style={styles.emptyText}>Sin documentos adjuntos</Text>
@@ -276,7 +420,7 @@ export default function ExpedienteDetailScreen({ route, navigation }: Props) {
               <TouchableOpacity
                 key={doc.id}
                 style={styles.docCard}
-                onPress={() => handleOpenDocumento(doc.archivo_url)}
+                onPress={() => navigation.navigate('DocumentViewer', { documentoId: doc.id })}
                 activeOpacity={0.7}
               >
                 <View style={styles.docIconWrap}>
@@ -551,5 +695,29 @@ const styles = StyleSheet.create({
     fontSize: 24,
     color: '#ccc',
     lineHeight: 28,
+  },
+
+  // Documentos: cabecera con botón subir
+  docSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  uploadBtn: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    minWidth: 44,
+    alignItems: 'center',
+  },
+  uploadBtnDisabled: {
+    backgroundColor: '#999',
+  },
+  uploadBtnText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
   },
 });
