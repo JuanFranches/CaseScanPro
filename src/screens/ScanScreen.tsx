@@ -23,7 +23,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Scan'>;
 const { width: SCREEN_W } = Dimensions.get('window');
 const THUMB_W   = (SCREEN_W - 52) / 2; // 2 columnas: 20+20 padding + 12 gap
 const THUMB_H   = THUMB_W * 1.37;       // proporción A4 portrait
-const MAX_PAGES = 50;
+const MAX_PAGES = 10; // límite del escáner nativo de ML Kit
 
 type Mode = 'una' | 'varias';
 
